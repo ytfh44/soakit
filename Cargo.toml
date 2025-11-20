@@ -1,0 +1,141 @@
+[package]
+name = "soakit"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+# ==================== 1. 正确性与安全性 (Correctness & Safety) - 全部 deny ====================
+# 禁止可能 panic 的操作
+unwrap_used = "deny"
+expect_used = "deny"
+unwrap_in_result = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+fallible_impl_from = "deny"
+
+# 禁止未处理的结果
+unused_result = "deny"
+result_large_err = "deny"
+
+# 禁止不安全操作相关
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+unsafe_removed_from_name = "warn"
+unsafe_derive_deserialize = "deny"
+drop_forget_ref = "deny"
+ptr_offset_with_cast = "deny"
+
+# 索引越界风险
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+
+# ==================== 2. 并发与线程安全 (Concurrency Safety) ====================
+# 禁止在 async 中持有锁跨越 await 点
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+await_holding_invalid_type = "deny"
+mutex_atomic = "deny"
+mutex_integer = "deny"
+rc_mutex = "deny"
+non_send_fields_in_send_ty = "deny"
+future_not_send = "deny"
+
+# ==================== 3. 错误处理与健壮性 (Robustness) ====================
+# 禁止使用隐式错误转换
+error_impl_error = "warn"
+explicit_iter_loop = "warn"
+iter_not_returning_iterator = "warn"
+map_err_ignore = "warn"
+missing_errors_doc = "warn"
+result_unit_err = "warn"
+
+# ==================== 4. 权限与配置安全 (Security Configuration) ====================
+# Unix 文件权限必须使用八进制
+non_octal_unix_permissions = "deny"
+rest_pat_in_fully_bound_structs = "warn"
+
+# ==================== 5. API 使用安全 (API Safety) ====================
+# 禁止危险的 API 使用
+disallowed_methods = "deny"
+disallowed_names = "warn"
+disallowed_types = "deny"
+from_over_into = "warn"
+into_iter_on_ref = "deny"
+iter_on_single_items = "warn"
+iter_on_empty_collections = "warn"
+invalid_upcast_comparisons = "deny"
+invalid_null_ptr_usage = "deny"
+
+# ==================== 6. 异步编程安全 (Async Safety) ====================
+# async 函数中的问题
+async_yields_async = "warn"
+unused_async = "warn"
+async_fn_in_trait = "warn"
+
+# ==================== 7. 性能与资源安全 (Performance & Resources) ====================
+# 大数组分配检测
+large_stack_arrays = "deny"
+large_const_arrays = "warn"
+vec_box = "warn"
+box_collection = "warn"
+linkedlist = "warn"
+
+# 资源泄漏
+mem_forget = "deny"
+forget_copy = "deny"
+forget_ref = "deny"
+missing_const_for_fn = "warn"
+
+# ==================== 8. 具体可疑模式 (Suspicious Patterns) ====================
+suspicious_arithmetic_impl = "deny"
+suspicious_else_formatting = "warn"
+suspicious_map = "warn"
+suspicious_op_assign_impl = "deny"
+suspicious_to_owned = "warn"
+suspicious_unary_op_formatting = "warn"
+suspicious_use_of_offset = "deny"
+suspicious_xor_used_as_pow = "warn"
+
+# ==================== 9. 代码清晰度与维护性 (Maintainability) ====================
+# 复杂度过高
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+too_many_arguments = "warn"
+type_complexity = "warn"
+fn_params_excessive_bools = "warn"
+bool_comparison = "warn"
+
+# 具体风格问题
+implicit_clone = "warn"
+inconsistent_struct_constructor = "warn"
+redundant_clone = "warn"
+unnecessary_cast = "warn"
+unnecessary_wraps = "warn"
+useless_conversion = "warn"
+
+# ==================== 10. 严格模式 (Pedantic) ====================
+missing_panics_doc = "warn"
+missing_docs = "warn"
+module_name_repetitions = "allow"
+pub_use = "warn"
+unused_self = "warn"
+wildcard_imports = "warn"
+enum_variant_names = "warn"
+cast_lossless = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+
+# ==================== 11. 测试中的特殊配置 (Test Configuration) ====================
+# 在测试模块中放宽限制（Rust 1.75+ 支持）
+[lints.clippy.test]
+level = "allow"
+unwrap_used = "allow"
+expect_used = "allow"
+indexing_slicing = "allow"
+panic = "allow"
+dbg_macro = "allow"
+unwrap_in_result = "allow"
+
+[dependencies]
