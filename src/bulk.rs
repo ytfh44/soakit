@@ -7,6 +7,7 @@ use crate::error::{Result, SoAKitError};
 use crate::meta::Registry;
 use crate::util::filter_system_fields;
 use crate::value::Value;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
@@ -22,7 +23,7 @@ use std::rc::Rc;
 /// * `count` - The number of elements in the bulk
 /// * `id` - Vector of element IDs (typically 0..count-1)
 /// * `versions` - Map from field names to version numbers, incremented when fields are updated
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
     /// Number of elements in the bulk
     pub count: usize,
@@ -80,7 +81,7 @@ impl Meta {
 ///
 /// * `value` - The cached computed value
 /// * `versions` - Version numbers of the dependencies when this value was computed
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     /// Cached value
     pub value: Value,
@@ -128,13 +129,14 @@ pub struct CacheEntry {
 /// ];
 /// let bulk = bulk.set(&registry, "age", values).unwrap();
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Bulk {
     /// Metadata (count, id, versions)
     pub meta: Meta,
     /// Field data storage: maps field names to arrays of values
     pub data: BTreeMap<String, Vec<Value>>,
     /// Cache for derived fields (using RefCell for interior mutability)
+    #[serde(skip)]
     pub cache: RefCell<BTreeMap<String, CacheEntry>>,
 }
 
@@ -288,10 +290,306 @@ impl Bulk {
         }
     }
 
+    /// Serialize bulk to JSON string
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(String)` containing the JSON representation, or an error if serialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if serialization fails
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string(self).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from JSON string
+    ///
+    /// # Arguments
+    ///
+    /// * `json` - JSON string to deserialize
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Bulk)` if successful, or an error if deserialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if deserialization fails
+    pub fn from_json(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Serialize bulk to binary format using bincode
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Vec<u8>)` containing the binary representation, or an error if serialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if serialization fails
+    pub fn to_binary(&self) -> Result<Vec<u8>> {
+        bincode::serialize(self).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from binary format
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Binary data to deserialize
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Bulk)` if successful, or an error if deserialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if deserialization fails
+    pub fn from_binary(data: &[u8]) -> Result<Self> {
+        bincode::deserialize(data).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Serialize bulk to TOML string
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(String)` containing the TOML representation, or an error if serialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if serialization fails
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string(self).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from TOML string
+    ///
+    /// # Arguments
+    ///
+    /// * `toml` - TOML string to deserialize
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Bulk)` if successful, or an error if deserialization fails.
+    ///
+    /// # Errors
+    ///
+    /// - [`SoAKitError::InvalidArgument`] if deserialization fails
+    pub fn from_toml(toml: &str) -> Result<Self> {
+        toml::from_str(toml).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Helper to convert bulk data to a vector of record maps containing Values.
+    fn to_records_values(&self) -> Vec<std::collections::BTreeMap<String, Value>> {
+        let mut records = Vec::with_capacity(self.meta.count);
+
+        for i in 0..self.meta.count {
+            let mut record = std::collections::BTreeMap::new();
+            // Add ID
+            let _ = record.insert("id".to_string(), Value::ScalarInt(self.meta.id[i] as i64));
+
+            // Add fields
+            for (name, values) in &self.data {
+                // Skip system fields
+                if name.starts_with('_') {
+                    continue;
+                }
+
+                // Always insert the value. Value::clone() is cheap enough or necessary.
+                let _ = record.insert(name.clone(), values[i].clone());
+            }
+            records.push(record);
+        }
+        records
+    }
+
+    /// Helper to create Bulk from intermediate Value records.
+    fn from_records_values(
+        records: Vec<std::collections::BTreeMap<String, Value>>,
+        registry: &crate::meta::Registry,
+    ) -> Result<Self> {
+        let count = records.len();
+        if count == 0 {
+            return Err(SoAKitError::InvalidArgument(
+                "Cannot create Bulk from empty records".to_string(),
+            ));
+        }
+
+        let bulk = Bulk::new(count)?;
+        let mut current_bulk = bulk;
+
+        for name in registry.list_fields() {
+            let meta = registry.get_metadata(&name).unwrap();
+            if meta.is_derived {
+                continue;
+            }
+
+            let mut values = Vec::with_capacity(count);
+
+            for (i, record) in records.iter().enumerate() {
+                if let Some(val) = record.get(&name) {
+                    // Validate
+                    if !(meta.validator)(val) {
+                        return Err(SoAKitError::InvalidArgument(format!(
+                            "Invalid value for field '{}' at index {}: {:?}",
+                            name, i, val
+                        )));
+                    }
+
+                    values.push(val.clone());
+                } else {
+                    return Err(SoAKitError::InvalidArgument(format!(
+                        "Missing field '{}' at index {}",
+                        name, i
+                    )));
+                }
+            }
+
+            current_bulk = current_bulk.set(registry, &name, values)?;
+        }
+
+        Ok(current_bulk)
+    }
+
+    /// Serialize bulk to a JSON string of records (AoS format).
+    pub fn to_records_json(&self) -> Result<String> {
+        let records_values = self.to_records_values();
+
+        // Convert Values to untagged JSON values
+        let records: Vec<serde_json::Map<String, serde_json::Value>> = records_values
+            .into_iter()
+            .map(|record| {
+                record
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_untagged_json_value()))
+                    .collect()
+            })
+            .collect();
+
+        serde_json::to_string(&records).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from a JSON string of records.
+    pub fn from_records_json(json: &str, registry: &crate::meta::Registry) -> Result<Self> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
+
+        let records_json = match parsed {
+            serde_json::Value::Array(arr) => arr,
+            _ => {
+                return Err(SoAKitError::InvalidArgument(
+                    "Expected JSON array of objects".to_string(),
+                ));
+            }
+        };
+
+        let mut records_values = Vec::with_capacity(records_json.len());
+        for (i, item) in records_json.into_iter().enumerate() {
+            match item {
+                serde_json::Value::Object(obj) => {
+                    let mut record = std::collections::BTreeMap::new();
+                    for (k, v) in obj {
+                        let val = Value::from_untagged_json_value(v)?;
+                        let _ = record.insert(k, val);
+                    }
+                    records_values.push(record);
+                }
+                _ => {
+                    return Err(SoAKitError::InvalidArgument(format!(
+                        "Record {} is not an object",
+                        i
+                    )));
+                }
+            }
+        }
+
+        Self::from_records_values(records_values, registry)
+    }
+
+    /// Serialize bulk to a TOML string of records.
+    pub fn to_records_toml(&self) -> Result<String> {
+        let records_values = self.to_records_values();
+
+        // Convert Values to untagged JSON values (TOML uses serde data model)
+        let records: Vec<serde_json::Map<String, serde_json::Value>> = records_values
+            .into_iter()
+            .map(|record| {
+                record
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_untagged_json_value()))
+                    .collect()
+            })
+            .collect();
+
+        let mut map = std::collections::BTreeMap::new();
+        let _ = map.insert("records".to_string(), records);
+
+        toml::to_string(&map).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from a TOML string of records.
+    /// Expects `[[records]]` format.
+    pub fn from_records_toml(toml: &str, registry: &crate::meta::Registry) -> Result<Self> {
+        let parsed: serde_json::Value =
+            toml::from_str(toml).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
+
+        let records_json = match parsed {
+            serde_json::Value::Object(mut obj) => match obj.remove("records") {
+                Some(serde_json::Value::Array(arr)) => arr,
+                _ => {
+                    return Err(SoAKitError::InvalidArgument(
+                        "Expected 'records' array in TOML".to_string(),
+                    ));
+                }
+            },
+            _ => {
+                return Err(SoAKitError::InvalidArgument(
+                    "Expected TOML table with 'records' array".to_string(),
+                ));
+            }
+        };
+
+        let mut records_values = Vec::with_capacity(records_json.len());
+        for (i, item) in records_json.into_iter().enumerate() {
+            match item {
+                serde_json::Value::Object(obj) => {
+                    let mut record = std::collections::BTreeMap::new();
+                    for (k, v) in obj {
+                        let val = Value::from_untagged_json_value(v)?;
+                        let _ = record.insert(k, val);
+                    }
+                    records_values.push(record);
+                }
+                _ => {
+                    return Err(SoAKitError::InvalidArgument(format!(
+                        "Record {} is not an object",
+                        i
+                    )));
+                }
+            }
+        }
+
+        Self::from_records_values(records_values, registry)
+    }
+
+    /// Serialize bulk to a binary format of records.
+    pub fn to_records_binary(&self) -> Result<Vec<u8>> {
+        let records = self.to_records_values();
+        bincode::serialize(&records).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
+    }
+
+    /// Deserialize bulk from a binary format of records.
+    pub fn from_records_binary(data: &[u8], registry: &crate::meta::Registry) -> Result<Self> {
+        let records: Vec<std::collections::BTreeMap<String, Value>> =
+            bincode::deserialize(data).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
+
+        Self::from_records_values(records, registry)
+    }
+
     /// Get field values.
     ///
     /// Retrieves the values for a field. For regular fields, this returns the
-    /// stored values. For derived fields, this computes the value (or retrieves
     /// it from cache if valid) and returns it.
     ///
     /// The returned value is always a vector type (`VectorInt`, `VectorFloat`, etc.)
@@ -763,9 +1061,9 @@ impl Bulk {
                         if let Some(old_val) = new_values.get_mut(idx) {
                             *old_val = new_val.clone();
                         }
-                        subset_idx = subset_idx
-                            .checked_add(1)
-                            .ok_or_else(|| SoAKitError::InvalidArgument("Index overflow".to_string()))?;
+                        subset_idx = subset_idx.checked_add(1).ok_or_else(|| {
+                            SoAKitError::InvalidArgument("Index overflow".to_string())
+                        })?;
                     }
                 }
             }
@@ -830,11 +1128,7 @@ impl Bulk {
     /// let views = bulk.partition_by(&registry, "category").unwrap();
     /// assert_eq!(views.len(), 3); // Three unique categories
     /// ```
-    pub fn partition_by(
-        &self,
-        registry: &Registry,
-        field: &str,
-    ) -> Result<Vec<crate::view::View>> {
+    pub fn partition_by(&self, registry: &Registry, field: &str) -> Result<Vec<crate::view::View>> {
         // Check if field exists in data
         if !self.data.contains_key(field) {
             return Err(SoAKitError::FieldNotFound(field.to_string()));
@@ -846,14 +1140,20 @@ impl Bulk {
         // Extract unique values and create masks
         let (unique_values, masks) = match field_value {
             Value::VectorInt(v) => {
-                let unique: Vec<i64> = v.iter().cloned().collect::<HashSet<_>>().into_iter().collect();
+                let unique: Vec<i64> = v
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 let mut unique_sorted = unique;
                 unique_sorted.sort();
                 let masks: Vec<Vec<bool>> = unique_sorted
                     .iter()
                     .map(|&val| v.iter().map(|&x| x == val).collect())
                     .collect();
-                let unique_values: Vec<Value> = unique_sorted.into_iter().map(Value::ScalarInt).collect();
+                let unique_values: Vec<Value> =
+                    unique_sorted.into_iter().map(Value::ScalarInt).collect();
                 (unique_values, masks)
             }
             Value::VectorFloat(v) => {
@@ -883,7 +1183,8 @@ impl Bulk {
                             .collect()
                     })
                     .collect();
-                let unique_values: Vec<Value> = unique.into_iter().map(Value::ScalarFloat).collect();
+                let unique_values: Vec<Value> =
+                    unique.into_iter().map(Value::ScalarFloat).collect();
                 (unique_values, masks)
             }
             Value::VectorBool(v) => {
@@ -896,20 +1197,26 @@ impl Bulk {
                 (unique_values, masks)
             }
             Value::VectorString(v) => {
-                let unique: Vec<String> = v.iter().cloned().collect::<HashSet<_>>().into_iter().collect();
+                let unique: Vec<String> = v
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 let mut unique_sorted = unique;
                 unique_sorted.sort();
                 let masks: Vec<Vec<bool>> = unique_sorted
                     .iter()
                     .map(|val| v.iter().map(|x| x == val).collect())
                     .collect();
-                let unique_values: Vec<Value> = unique_sorted.into_iter().map(Value::ScalarString).collect();
+                let unique_values: Vec<Value> =
+                    unique_sorted.into_iter().map(Value::ScalarString).collect();
                 (unique_values, masks)
             }
             _ => {
                 return Err(SoAKitError::InvalidArgument(
                     "Partition field must be a vector".to_string(),
-                ))
+                ));
             }
         };
 
@@ -1183,7 +1490,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         registry
@@ -1201,14 +1510,22 @@ mod tests {
             .set(
                 &registry,
                 "a",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
         let bulk = bulk
             .set(
                 &registry,
                 "b",
-                vec![Value::ScalarInt(5), Value::ScalarInt(15), Value::ScalarInt(25)],
+                vec![
+                    Value::ScalarInt(5),
+                    Value::ScalarInt(15),
+                    Value::ScalarInt(25),
+                ],
             )
             .unwrap();
 
@@ -1246,7 +1563,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         registry
@@ -1401,7 +1720,11 @@ mod tests {
             .set(
                 &registry,
                 "age",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
 
@@ -1442,7 +1765,11 @@ mod tests {
             .set(
                 &registry,
                 "age",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
 
@@ -1599,14 +1926,22 @@ mod tests {
             .set(
                 &registry,
                 "age",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
         let bulk = bulk
             .set(
                 &registry,
                 "height",
-                vec![Value::ScalarInt(100), Value::ScalarInt(200), Value::ScalarInt(300)],
+                vec![
+                    Value::ScalarInt(100),
+                    Value::ScalarInt(200),
+                    Value::ScalarInt(300),
+                ],
             )
             .unwrap();
 
@@ -1629,7 +1964,11 @@ mod tests {
             .set(
                 &registry,
                 "age",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
 
@@ -1691,7 +2030,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_meta_new() {
         let meta = Meta::new(5).unwrap();
@@ -1723,7 +2061,11 @@ mod tests {
             .set(
                 &registry,
                 "age",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap();
 
@@ -1735,4 +2077,3 @@ mod tests {
         );
     }
 }
-

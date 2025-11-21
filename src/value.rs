@@ -4,6 +4,7 @@
 /// that can be stored in a SoAKit [`Bulk`] structure. Values can be scalars (rank 0),
 /// vectors (rank 1), or matrices (rank 2+).
 use crate::error::{Result, SoAKitError};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Represents a value in the SoA structure.
@@ -62,7 +63,7 @@ use std::fmt;
 ///     Value::VectorInt(vec![4, 5, 6]),
 /// ]);
 /// ```
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     /// Scalar integer value (64-bit signed integer)
     ScalarInt(i64),
@@ -183,14 +184,13 @@ impl Value {
 
     /// Get the rank (number of dimensions) of the value.
     ///
-    /// The rank indicates the dimensionality of the value:
-    /// - `0` for scalars
-    /// - `1` for vectors
-    /// - `2` for matrices (and higher-dimensional structures)
+    /// - Scalars have rank 0
+    /// - Vectors have rank 1
+    /// - Matrices have rank 2
     ///
     /// # Returns
     ///
-    /// The rank of the value as a `usize`.
+    /// The rank as a `usize`.
     ///
     /// # Examples
     ///
@@ -286,7 +286,7 @@ impl Value {
     /// ```rust
     /// use soakit::Value;
     ///
-    /// assert_eq!(Value::ScalarInt(42).shape(), vec![]);
+    /// assert_eq!(Value::ScalarInt(42).shape(), Vec::<usize>::new());
     /// assert_eq!(Value::VectorInt(vec![1, 2, 3]).shape(), vec![3]);
     /// let matrix = Value::Matrix(vec![
     ///     Value::VectorInt(vec![1, 2]),
@@ -299,7 +299,7 @@ impl Value {
             Value::ScalarInt(_)
             | Value::ScalarFloat(_)
             | Value::ScalarBool(_)
-            | Value::ScalarString(_) => vec![],
+            | Value::ScalarString(_) => Vec::new(),
             Value::VectorInt(v) => vec![v.len()],
             Value::VectorFloat(v) => vec![v.len()],
             Value::VectorBool(v) => vec![v.len()],
@@ -308,10 +308,7 @@ impl Value {
                 if m.is_empty() {
                     vec![0]
                 } else {
-                    let first_row_len = m
-                        .first()
-                        .map(|row| row.len())
-                        .unwrap_or(0);
+                    let first_row_len = m.first().map(|row| row.len()).unwrap_or(0);
                     vec![m.len(), first_row_len]
                 }
             }
@@ -355,44 +352,183 @@ impl Value {
     /// ```
     pub fn get_element(&self, idx: usize) -> Result<Value> {
         match self {
-            Value::VectorInt(v) => {
-                v.get(idx)
-                    .copied()
-                    .map(Value::ScalarInt)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: idx,
-                        max: v.len(),
-                    })
-            }
-            Value::VectorFloat(v) => {
-                v.get(idx)
-                    .copied()
-                    .map(Value::ScalarFloat)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: idx,
-                        max: v.len(),
-                    })
-            }
-            Value::VectorBool(v) => {
-                v.get(idx)
-                    .copied()
-                    .map(Value::ScalarBool)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: idx,
-                        max: v.len(),
-                    })
-            }
+            Value::VectorInt(v) => v.get(idx).copied().map(Value::ScalarInt).ok_or_else(|| {
+                SoAKitError::IndexOutOfBounds {
+                    index: idx,
+                    max: v.len(),
+                }
+            }),
+            Value::VectorFloat(v) => v.get(idx).copied().map(Value::ScalarFloat).ok_or_else(|| {
+                SoAKitError::IndexOutOfBounds {
+                    index: idx,
+                    max: v.len(),
+                }
+            }),
+            Value::VectorBool(v) => v.get(idx).copied().map(Value::ScalarBool).ok_or_else(|| {
+                SoAKitError::IndexOutOfBounds {
+                    index: idx,
+                    max: v.len(),
+                }
+            }),
             Value::VectorString(v) => {
-                v.get(idx)
-                    .cloned()
-                    .map(Value::ScalarString)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
+                v.get(idx).cloned().map(Value::ScalarString).ok_or_else(|| {
+                    SoAKitError::IndexOutOfBounds {
                         index: idx,
                         max: v.len(),
-                    })
+                    }
+                })
             }
             _ => Err(SoAKitError::InvalidArgument(
                 "get_element only works on vectors".to_string(),
+            )),
+        }
+    }
+
+    /// Convert Value to an untagged serde_json::Value.
+    ///
+    /// This is useful for record-based serialization where we want "natural" JSON
+    /// representation (e.g. `42` instead of `{"ScalarInt": 42}`).
+    pub fn to_untagged_json_value(&self) -> serde_json::Value {
+        match self {
+            Value::ScalarInt(v) => serde_json::Value::Number((*v).into()),
+            Value::ScalarFloat(v) => {
+                serde_json::Number::from_f64(*v)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null) // Handle NaN/Inf as Null for JSON
+            }
+            Value::ScalarBool(v) => serde_json::Value::Bool(*v),
+            Value::ScalarString(v) => serde_json::Value::String(v.clone()),
+            Value::VectorInt(v) => serde_json::Value::Array(
+                v.iter()
+                    .map(|&x| serde_json::Value::Number(x.into()))
+                    .collect(),
+            ),
+            Value::VectorFloat(v) => serde_json::Value::Array(
+                v.iter()
+                    .map(|&x| {
+                        serde_json::Number::from_f64(x)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::Null)
+                    })
+                    .collect(),
+            ),
+            Value::VectorBool(v) => {
+                serde_json::Value::Array(v.iter().map(|&x| serde_json::Value::Bool(x)).collect())
+            }
+            Value::VectorString(v) => serde_json::Value::Array(
+                v.iter()
+                    .map(|x| serde_json::Value::String(x.clone()))
+                    .collect(),
+            ),
+            Value::Matrix(v) => {
+                serde_json::Value::Array(v.iter().map(|x| x.to_untagged_json_value()).collect())
+            }
+        }
+    }
+
+    /// Create Value from an untagged serde_json::Value.
+    ///
+    /// Infers the type based on the JSON value:
+    /// - Number -> ScalarInt (if integer) or ScalarFloat
+    /// - Bool -> ScalarBool
+    /// - String -> ScalarString
+    /// - Array -> Vector (if all elements same type) or Matrix (if elements are arrays)
+    ///
+    /// Note: This does best-effort inference. For empty arrays, it defaults to VectorInt.
+    pub fn from_untagged_json_value(json: serde_json::Value) -> Result<Self> {
+        match json {
+            serde_json::Value::Null => Err(SoAKitError::InvalidArgument(
+                "Cannot convert Null to Value".to_string(),
+            )),
+            serde_json::Value::Bool(b) => Ok(Value::ScalarBool(b)),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(Value::ScalarInt(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(Value::ScalarFloat(f))
+                } else {
+                    Err(SoAKitError::InvalidArgument(
+                        "Invalid number format".to_string(),
+                    ))
+                }
+            }
+            serde_json::Value::String(s) => Ok(Value::ScalarString(s)),
+            serde_json::Value::Array(arr) => {
+                if arr.is_empty() {
+                    // Default to VectorInt for empty array
+                    return Ok(Value::VectorInt(Vec::new()));
+                }
+
+                // Check first element to determine type
+                let first = &arr[0];
+                match first {
+                    serde_json::Value::Number(n) if n.is_i64() => {
+                        let mut vec = Vec::with_capacity(arr.len());
+                        for val in arr {
+                            if let Some(i) = val.as_i64() {
+                                vec.push(i);
+                            } else {
+                                return Err(SoAKitError::InvalidArgument(
+                                    "Mixed types in array (expected integers)".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(Value::VectorInt(vec))
+                    }
+                    serde_json::Value::Number(n) if n.is_f64() => {
+                        let mut vec = Vec::with_capacity(arr.len());
+                        for val in arr {
+                            if let Some(f) = val.as_f64() {
+                                vec.push(f);
+                            } else {
+                                return Err(SoAKitError::InvalidArgument(
+                                    "Mixed types in array (expected floats)".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(Value::VectorFloat(vec))
+                    }
+                    serde_json::Value::Bool(_) => {
+                        let mut vec = Vec::with_capacity(arr.len());
+                        for val in arr {
+                            if let Some(b) = val.as_bool() {
+                                vec.push(b);
+                            } else {
+                                return Err(SoAKitError::InvalidArgument(
+                                    "Mixed types in array (expected booleans)".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(Value::VectorBool(vec))
+                    }
+                    serde_json::Value::String(_) => {
+                        let mut vec = Vec::with_capacity(arr.len());
+                        for val in arr {
+                            if let Some(s) = val.as_str() {
+                                vec.push(s.to_string());
+                            } else {
+                                return Err(SoAKitError::InvalidArgument(
+                                    "Mixed types in array (expected strings)".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(Value::VectorString(vec))
+                    }
+                    serde_json::Value::Array(_) => {
+                        // Matrix
+                        let mut vec = Vec::with_capacity(arr.len());
+                        for val in arr {
+                            vec.push(Self::from_untagged_json_value(val)?);
+                        }
+                        Ok(Value::Matrix(vec))
+                    }
+                    _ => Err(SoAKitError::InvalidArgument(
+                        "Unsupported array element type".to_string(),
+                    )),
+                }
+            }
+            serde_json::Value::Object(_) => Err(SoAKitError::InvalidArgument(
+                "Objects not supported as Values".to_string(),
             )),
         }
     }
@@ -547,8 +683,11 @@ mod tests {
     fn test_vector_float_nan_handling() {
         let vec_with_nan = Value::VectorFloat(vec![1.0, f64::NAN, 3.0]);
         assert_eq!(vec_with_nan.len(), 3);
-        assert_eq!(vec_with_nan.get_element(0).unwrap(), Value::ScalarFloat(1.0));
-        
+        assert_eq!(
+            vec_with_nan.get_element(0).unwrap(),
+            Value::ScalarFloat(1.0)
+        );
+
         // NaN comparison - get_element should work
         let nan_elem = vec_with_nan.get_element(1).unwrap();
         if let Value::ScalarFloat(f) = nan_elem {
@@ -557,7 +696,10 @@ mod tests {
             panic!("Expected ScalarFloat");
         }
 
-        assert_eq!(vec_with_nan.get_element(2).unwrap(), Value::ScalarFloat(3.0));
+        assert_eq!(
+            vec_with_nan.get_element(2).unwrap(),
+            Value::ScalarFloat(3.0)
+        );
     }
 
     #[test]
@@ -580,8 +722,14 @@ mod tests {
 
         // Test VectorString
         let v_string = Value::VectorString(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
-        assert_eq!(v_string.get_element(0).unwrap(), Value::ScalarString("a".to_string()));
-        assert_eq!(v_string.get_element(2).unwrap(), Value::ScalarString("c".to_string()));
+        assert_eq!(
+            v_string.get_element(0).unwrap(),
+            Value::ScalarString("a".to_string())
+        );
+        assert_eq!(
+            v_string.get_element(2).unwrap(),
+            Value::ScalarString("c".to_string())
+        );
     }
 
     #[test]
@@ -602,10 +750,13 @@ mod tests {
     #[test]
     fn test_shape_calculations() {
         // Scalar shapes
-        assert_eq!(Value::ScalarInt(42).shape(), vec![]);
-        assert_eq!(Value::ScalarFloat(3.14).shape(), vec![]);
-        assert_eq!(Value::ScalarBool(true).shape(), vec![]);
-        assert_eq!(Value::ScalarString("test".to_string()).shape(), vec![]);
+        assert_eq!(Value::ScalarInt(42).shape(), Vec::<usize>::new());
+        assert_eq!(Value::ScalarFloat(3.14).shape(), Vec::<usize>::new());
+        assert_eq!(Value::ScalarBool(true).shape(), Vec::<usize>::new());
+        assert_eq!(
+            Value::ScalarString("test".to_string()).shape(),
+            Vec::<usize>::new()
+        );
 
         // Vector shapes
         assert_eq!(Value::VectorInt(vec![1, 2, 3]).shape(), vec![3]);
@@ -625,9 +776,7 @@ mod tests {
         assert_eq!(empty_matrix.shape(), vec![0]);
 
         // Matrix with empty rows
-        let matrix_empty_row = Value::Matrix(vec![
-            Value::VectorInt(vec![]),
-        ]);
+        let matrix_empty_row = Value::Matrix(vec![Value::VectorInt(vec![])]);
         assert_eq!(matrix_empty_row.shape(), vec![1, 0]);
     }
 
@@ -722,7 +871,10 @@ mod tests {
         // Vector with empty strings
         let vec_empty_strs = Value::VectorString(vec![String::new(), "a".to_string()]);
         assert_eq!(vec_empty_strs.len(), 2);
-        assert_eq!(vec_empty_strs.get_element(0).unwrap(), Value::ScalarString(String::new()));
+        assert_eq!(
+            vec_empty_strs.get_element(0).unwrap(),
+            Value::ScalarString(String::new())
+        );
     }
 
     #[test]
@@ -742,13 +894,8 @@ mod tests {
 
     #[test]
     fn test_float_special_values() {
-        let vec_special = Value::VectorFloat(vec![
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            0.0,
-            -0.0,
-        ]);
+        let vec_special =
+            Value::VectorFloat(vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0]);
 
         assert_eq!(vec_special.len(), 5);
         let inf_elem = vec_special.get_element(0).unwrap();
@@ -768,18 +915,17 @@ mod tests {
 
     #[test]
     fn test_integer_edge_values() {
-        let vec_extreme = Value::VectorInt(vec![
-            i64::MIN,
-            -1,
-            0,
-            1,
-            i64::MAX,
-        ]);
+        let vec_extreme = Value::VectorInt(vec![i64::MIN, -1, 0, 1, i64::MAX]);
 
         assert_eq!(vec_extreme.len(), 5);
-        assert_eq!(vec_extreme.get_element(0).unwrap(), Value::ScalarInt(i64::MIN));
+        assert_eq!(
+            vec_extreme.get_element(0).unwrap(),
+            Value::ScalarInt(i64::MIN)
+        );
         assert_eq!(vec_extreme.get_element(2).unwrap(), Value::ScalarInt(0));
-        assert_eq!(vec_extreme.get_element(4).unwrap(), Value::ScalarInt(i64::MAX));
+        assert_eq!(
+            vec_extreme.get_element(4).unwrap(),
+            Value::ScalarInt(i64::MAX)
+        );
     }
 }
-
