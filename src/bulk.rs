@@ -12,6 +12,34 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 
+/// Size of each data chunk (tile) in the AoSoA structure.
+///
+/// This size is chosen to balance cache locality and overhead.
+/// 1024 elements * 8 bytes (i64/f64) = 8KB, which fits well in L1 cache.
+pub const CHUNK_SIZE: usize = 1024;
+
+/// A chunk of data in the AoSoA structure.
+///
+/// Stores a fixed number of elements (up to [`CHUNK_SIZE`]) for all fields.
+/// Each field is stored as a Vector Value (e.g., `VectorInt`, `VectorFloat`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chunk {
+    /// Number of elements in this chunk
+    pub len: usize,
+    /// Column data: maps field names to Vector Values
+    pub columns: BTreeMap<String, Value>,
+}
+
+impl Chunk {
+    /// Create a new empty chunk.
+    pub fn new() -> Self {
+        Self {
+            len: 0,
+            columns: BTreeMap::new(),
+        }
+    }
+}
+
 /// Metadata for a Bulk structure.
 ///
 /// Contains information about the bulk structure including the number of elements,
@@ -133,8 +161,8 @@ pub struct CacheEntry {
 pub struct Bulk {
     /// Metadata (count, id, versions)
     pub meta: Meta,
-    /// Field data storage: maps field names to arrays of values
-    pub data: BTreeMap<String, Vec<Value>>,
+    /// Field data storage: vector of chunks
+    pub chunks: Vec<Chunk>,
     /// Cache for derived fields (using RefCell for interior mutability)
     #[serde(skip)]
     pub cache: RefCell<BTreeMap<String, CacheEntry>>,
@@ -170,7 +198,7 @@ impl Bulk {
         let meta = Meta::new(count)?;
         Ok(Self {
             meta,
-            data: BTreeMap::new(),
+            chunks: Vec::new(),
             cache: RefCell::new(BTreeMap::new()),
         })
     }
@@ -260,7 +288,31 @@ impl Bulk {
 
         // Create new bulk with updated field
         let mut new_bulk = self.clone();
-        let _ = new_bulk.data.insert(field.to_string(), values);
+
+        // If chunks are empty (first field being set), initialize them
+        if new_bulk.chunks.is_empty() {
+            let num_chunks = (self.meta.count + CHUNK_SIZE - 1) / CHUNK_SIZE;
+            new_bulk.chunks = Vec::with_capacity(num_chunks);
+            for i in 0..num_chunks {
+                let start = i * CHUNK_SIZE;
+                let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
+                new_bulk.chunks.push(Chunk {
+                    len: end - start,
+                    columns: BTreeMap::new(),
+                });
+            }
+        }
+
+        // Distribute values into chunks
+        for (i, chunk) in new_bulk.chunks.iter_mut().enumerate() {
+            let start = i * CHUNK_SIZE;
+            let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
+            let chunk_values = values[start..end].to_vec();
+
+            // Convert chunk values (scalars) to a single Vector Value
+            let vector_value = Value::from_scalars(chunk_values)?;
+            let _ = chunk.columns.insert(field.to_string(), vector_value);
+        }
 
         // Increment version
         let current_ver = new_bulk.meta.versions.get(field).copied().unwrap_or(0);
@@ -285,7 +337,7 @@ impl Bulk {
     pub fn clone(&self) -> Self {
         Self {
             meta: self.meta.clone(),
-            data: self.data.clone(),
+            chunks: self.chunks.clone(),
             cache: RefCell::new(self.cache.borrow().clone()),
         }
     }
@@ -384,22 +436,31 @@ impl Bulk {
     fn to_records_values(&self) -> Vec<std::collections::BTreeMap<String, Value>> {
         let mut records = Vec::with_capacity(self.meta.count);
 
-        for i in 0..self.meta.count {
-            let mut record = std::collections::BTreeMap::new();
-            // Add ID
-            let _ = record.insert("id".to_string(), Value::ScalarInt(self.meta.id[i] as i64));
+        for (chunk_idx, chunk) in self.chunks.iter().enumerate() {
+            let chunk_start_id = chunk_idx * CHUNK_SIZE;
 
-            // Add fields
-            for (name, values) in &self.data {
-                // Skip system fields
-                if name.starts_with('_') {
-                    continue;
+            for i in 0..chunk.len {
+                let mut record = std::collections::BTreeMap::new();
+                // Add ID
+                let _ = record.insert(
+                    "id".to_string(),
+                    Value::ScalarInt(self.meta.id[chunk_start_id + i] as i64),
+                );
+
+                // Add fields
+                for (name, values) in &chunk.columns {
+                    // Skip system fields
+                    if name.starts_with('_') {
+                        continue;
+                    }
+
+                    // Get value at index i from the vector value
+                    if let Ok(val) = values.get_element(i) {
+                        let _ = record.insert(name.clone(), val);
+                    }
                 }
-
-                // Always insert the value. Value::clone() is cheap enough or necessary.
-                let _ = record.insert(name.clone(), values[i].clone());
+                records.push(record);
             }
-            records.push(record);
         }
         records
     }
@@ -685,11 +746,21 @@ impl Bulk {
                 .dependencies
                 .iter()
                 .map(|dep| {
-                    self.meta
-                        .versions
-                        .get(dep)
-                        .copied()
-                        .ok_or_else(|| SoAKitError::FieldNotFound(dep.clone()))
+                    if let Some(dep_meta) = registry.get_metadata(dep) {
+                        if dep_meta.is_derived {
+                            // Derived fields don't have versions in meta.versions.
+                            // We rely on recursive cache invalidation, so we can use a placeholder.
+                            Ok(0)
+                        } else {
+                            self.meta
+                                .versions
+                                .get(dep)
+                                .copied()
+                                .ok_or_else(|| SoAKitError::FieldNotFound(dep.clone()))
+                        }
+                    } else {
+                        Err(SoAKitError::FieldNotFound(dep.clone()))
+                    }
                 })
                 .collect();
 
@@ -707,117 +778,32 @@ impl Bulk {
 
             Ok(computed_value)
         } else {
-            // Regular field - get from data
-            self.data
-                .get(field)
-                .ok_or_else(|| SoAKitError::FieldNotFound(field.to_string()))
-                .and_then(|vec_values| {
-                    // Convert Vec<Value> to a single Value representing the vector
-                    // In APL, getting a field returns the entire vector
-                    // We need to decide: should this return Vec<Value> or a Value::Vector?
-                    // Looking at the APL code, it seems like it returns the vector directly
-                    // But in our Rust implementation, we store Vec<Value> where each Value is one element
-                    // So we need to combine them into a single Value
-                    // Actually, wait - in the APL code, each field stores a vector of values
-                    // So if we have field "age" with values [10, 20, 30], we store Vec<Value> where
-                    // each Value might be a scalar. But actually, looking more carefully:
-                    // In APL, `bulk._data.(field)` would be a vector. So if field is "age" and
-                    // we have 3 elements, `bulk._data.age` would be something like [10, 20, 30]
-                    // which is a vector of 3 scalars.
+            // Regular field - get from chunks
+            if self.meta.count == 0 {
+                return Ok(Value::VectorInt(Vec::new()));
+            }
 
-                    // In our Rust implementation, we're storing Vec<Value> where each Value
-                    // represents one element's value for that field. So if we have 3 elements
-                    // and field "age", we might have [Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)]
+            let mut result_value: Option<Value> = None;
 
-                    // But the Get function should return... what? Looking at the APL code,
-                    // it seems like it returns the vector directly. So we need to convert
-                    // Vec<Value> into a single Value that represents a vector.
-
-                    // However, the values might not all be the same type. Let's assume they are
-                    // for now, and we can combine them into a Vector variant.
-
-                    if vec_values.is_empty() {
-                        return Err(SoAKitError::InvalidArgument(
-                            "Field has no values".to_string(),
-                        ));
+            for chunk in &self.chunks {
+                if let Some(chunk_val) = chunk.columns.get(field) {
+                    if let Some(res) = &mut result_value {
+                        res.append(chunk_val.clone())?;
+                    } else {
+                        result_value = Some(chunk_val.clone());
                     }
+                } else {
+                    return Err(SoAKitError::FieldNotFound(format!(
+                        "Field {} missing in chunk",
+                        field
+                    )));
+                }
+            }
 
-                    // Try to combine into a single vector Value
-                    // Check if all values are the same scalar type
-                    let first_val = vec_values
-                        .first()
-                        .ok_or_else(|| SoAKitError::InvalidArgument("Empty values".to_string()))?;
-                    match first_val {
-                        Value::ScalarInt(_) => {
-                            let ints: Result<Vec<i64>> = vec_values
-                                .iter()
-                                .map(|v| {
-                                    if let Value::ScalarInt(i) = v {
-                                        Ok(*i)
-                                    } else {
-                                        Err(SoAKitError::InvalidArgument(
-                                            "Mixed value types in field".to_string(),
-                                        ))
-                                    }
-                                })
-                                .collect();
-                            Ok(Value::VectorInt(ints?))
-                        }
-                        Value::ScalarFloat(_) => {
-                            let floats: Result<Vec<f64>> = vec_values
-                                .iter()
-                                .map(|v| {
-                                    if let Value::ScalarFloat(f) = v {
-                                        Ok(*f)
-                                    } else {
-                                        Err(SoAKitError::InvalidArgument(
-                                            "Mixed value types in field".to_string(),
-                                        ))
-                                    }
-                                })
-                                .collect();
-                            Ok(Value::VectorFloat(floats?))
-                        }
-                        Value::ScalarBool(_) => {
-                            let bools: Result<Vec<bool>> = vec_values
-                                .iter()
-                                .map(|v| {
-                                    if let Value::ScalarBool(b) = v {
-                                        Ok(*b)
-                                    } else {
-                                        Err(SoAKitError::InvalidArgument(
-                                            "Mixed value types in field".to_string(),
-                                        ))
-                                    }
-                                })
-                                .collect();
-                            Ok(Value::VectorBool(bools?))
-                        }
-                        Value::ScalarString(_) => {
-                            let strings: Result<Vec<String>> = vec_values
-                                .iter()
-                                .map(|v| {
-                                    if let Value::ScalarString(s) = v {
-                                        Ok(s.clone())
-                                    } else {
-                                        Err(SoAKitError::InvalidArgument(
-                                            "Mixed value types in field".to_string(),
-                                        ))
-                                    }
-                                })
-                                .collect();
-                            Ok(Value::VectorString(strings?))
-                        }
-                        _ => Err(SoAKitError::InvalidArgument(
-                            "Field contains non-scalar values".to_string(),
-                        )),
-                    }
-                })
+            result_value.ok_or_else(|| SoAKitError::FieldNotFound(field.to_string()))
         }
     }
 
-    /// Invalidate cache for fields that depend on the given field.
-    ///
     /// When a field is updated, any derived fields that depend on it need to
     /// have their cache invalidated so they will be recomputed on the next access.
     ///
@@ -839,8 +825,14 @@ impl Bulk {
             .collect();
 
         let mut cache_mut = self.cache.borrow_mut();
+        for f in &fields_to_invalidate {
+            let _ = cache_mut.remove(f);
+        }
+        drop(cache_mut); // Release the borrow before recursive calls
+
+        // Recursively invalidate fields that depend on the invalidated fields
         for f in fields_to_invalidate {
-            let _ = cache_mut.remove(&f);
+            self.invalidate_dependent_cache(registry, &f);
         }
     }
 
@@ -889,7 +881,11 @@ impl Bulk {
     /// assert_eq!(fields.len(), 2);
     /// ```
     pub fn list_data_fields(&self) -> Vec<String> {
-        filter_system_fields(&self.data.keys().cloned().collect::<Vec<_>>())
+        if let Some(chunk) = self.chunks.first() {
+            filter_system_fields(&chunk.columns.keys().cloned().collect::<Vec<_>>())
+        } else {
+            Vec::new()
+        }
     }
 
     /// Create a proxy for accessing a single element at the given index.
@@ -1017,15 +1013,45 @@ impl Bulk {
         let mut new_bulk = self.clone();
 
         // Get all data fields
-        let fields: Vec<String> = self.data.keys().cloned().collect();
+        let fields = self.list_data_fields();
 
         // Update each field
         for field in fields {
-            // Get old values
-            let old_values = self
-                .data
-                .get(&field)
-                .ok_or_else(|| SoAKitError::FieldNotFound(field.clone()))?;
+            // Get old values (reconstruct from chunks)
+            let mut old_values = Vec::with_capacity(self.meta.count);
+            for chunk in &self.chunks {
+                if let Some(chunk_val) = chunk.columns.get(&field) {
+                    // We need to flatten the vector value into scalars
+                    // This is inefficient but necessary for the current apply API which works on slices of Values
+                    match chunk_val {
+                        Value::VectorInt(v) => {
+                            old_values.extend(v.iter().map(|&x| Value::ScalarInt(x)))
+                        }
+                        Value::VectorFloat(v) => {
+                            old_values.extend(v.iter().map(|&x| Value::ScalarFloat(x)))
+                        }
+                        Value::VectorBool(v) => {
+                            old_values.extend(v.iter().map(|&x| Value::ScalarBool(x)))
+                        }
+                        Value::VectorString(v) => {
+                            old_values.extend(v.iter().map(|x| Value::ScalarString(x.clone())))
+                        }
+                        _ => {
+                            return Err(SoAKitError::InvalidArgument(format!(
+                                "Field {} is not a vector",
+                                field
+                            )));
+                        }
+                    }
+                }
+            }
+
+            if old_values.len() != self.meta.count {
+                return Err(SoAKitError::FieldNotFound(format!(
+                    "Field {} data incomplete",
+                    field
+                )));
+            }
 
             // Extract subset based on mask
             let subset: Vec<Value> = old_values
@@ -1052,8 +1078,8 @@ impl Bulk {
                 });
             }
 
-            // Update values in new_bulk for masked positions
-            let mut new_values = old_values.clone();
+            // Update values for masked positions
+            let mut new_values = old_values;
             let mut subset_idx = 0;
             for (idx, &mask_val) in normalized_mask.iter().enumerate() {
                 if mask_val {
@@ -1061,15 +1087,20 @@ impl Bulk {
                         if let Some(old_val) = new_values.get_mut(idx) {
                             *old_val = new_val.clone();
                         }
-                        subset_idx = subset_idx.checked_add(1).ok_or_else(|| {
-                            SoAKitError::InvalidArgument("Index overflow".to_string())
-                        })?;
+                        subset_idx += 1;
                     }
                 }
             }
 
-            // Update field in new bulk
-            let _ = new_bulk.data.insert(field.clone(), new_values);
+            // Distribute new values back into chunks
+            for (i, chunk) in new_bulk.chunks.iter_mut().enumerate() {
+                let start = i * CHUNK_SIZE;
+                let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
+                let chunk_values = new_values[start..end].to_vec();
+
+                let vector_value = Value::from_scalars(chunk_values)?;
+                let _ = chunk.columns.insert(field.clone(), vector_value);
+            }
 
             // Increment version
             let current_ver = new_bulk.meta.versions.get(&field).copied().unwrap_or(0);
@@ -1130,7 +1161,7 @@ impl Bulk {
     /// ```
     pub fn partition_by(&self, registry: &Registry, field: &str) -> Result<Vec<crate::view::View>> {
         // Check if field exists in data
-        if !self.data.contains_key(field) {
+        if !self.list_data_fields().contains(&field.to_string()) {
             return Err(SoAKitError::FieldNotFound(field.to_string()));
         }
 

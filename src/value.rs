@@ -532,6 +532,115 @@ impl Value {
             )),
         }
     }
+
+    /// Create a vector Value from a list of scalar Values.
+    ///
+    /// All values must be of the same type. Supports both scalar types (which are
+    /// converted to vectors) and vector types (which are converted to Matrix).
+    pub fn from_scalars(scalars: Vec<Value>) -> Result<Self> {
+        if scalars.is_empty() {
+            return Ok(Value::VectorInt(Vec::new())); // Default to empty int vector
+        }
+
+        let first = &scalars[0];
+        match first {
+            Value::ScalarInt(_) => {
+                let mut vec = Vec::with_capacity(scalars.len());
+                for val in scalars {
+                    if let Value::ScalarInt(i) = val {
+                        vec.push(i);
+                    } else {
+                        return Err(SoAKitError::InvalidArgument(
+                            "Mixed types in scalars (expected integers)".to_string(),
+                        ));
+                    }
+                }
+                Ok(Value::VectorInt(vec))
+            }
+            Value::ScalarFloat(_) => {
+                let mut vec = Vec::with_capacity(scalars.len());
+                for val in scalars {
+                    if let Value::ScalarFloat(f) = val {
+                        vec.push(f);
+                    } else {
+                        return Err(SoAKitError::InvalidArgument(
+                            "Mixed types in scalars (expected floats)".to_string(),
+                        ));
+                    }
+                }
+                Ok(Value::VectorFloat(vec))
+            }
+            Value::ScalarBool(_) => {
+                let mut vec = Vec::with_capacity(scalars.len());
+                for val in scalars {
+                    if let Value::ScalarBool(b) = val {
+                        vec.push(b);
+                    } else {
+                        return Err(SoAKitError::InvalidArgument(
+                            "Mixed types in scalars (expected booleans)".to_string(),
+                        ));
+                    }
+                }
+                Ok(Value::VectorBool(vec))
+            }
+            Value::ScalarString(_) => {
+                let mut vec = Vec::with_capacity(scalars.len());
+                for val in scalars {
+                    if let Value::ScalarString(s) = val {
+                        vec.push(s);
+                    } else {
+                        return Err(SoAKitError::InvalidArgument(
+                            "Mixed types in scalars (expected strings)".to_string(),
+                        ));
+                    }
+                }
+                Ok(Value::VectorString(vec))
+            }
+            Value::VectorInt(_)
+            | Value::VectorFloat(_)
+            | Value::VectorBool(_)
+            | Value::VectorString(_) => {
+                // Convert Vec<Vector*> to Matrix
+                // Matrix is Vec<Value>, so we can directly use the scalars vector
+                Ok(Value::Matrix(scalars))
+            }
+            Value::Matrix(_) => {
+                // Nested matrix - just wrap in another Matrix
+                Ok(Value::Matrix(scalars))
+            }
+        }
+    }
+
+    /// Append another vector Value to this one.
+    ///
+    /// Both Values must be of the same vector type.
+    pub fn append(&mut self, other: Value) -> Result<()> {
+        match (self, other) {
+            (Value::VectorInt(v1), Value::VectorInt(v2)) => {
+                v1.extend(v2);
+                Ok(())
+            }
+            (Value::VectorFloat(v1), Value::VectorFloat(v2)) => {
+                v1.extend(v2);
+                Ok(())
+            }
+            (Value::VectorBool(v1), Value::VectorBool(v2)) => {
+                v1.extend(v2);
+                Ok(())
+            }
+            (Value::VectorString(v1), Value::VectorString(v2)) => {
+                v1.extend(v2);
+                Ok(())
+            }
+            (Value::Matrix(v1), Value::Matrix(v2)) => {
+                v1.extend(v2);
+                Ok(())
+            }
+            _ => Err(SoAKitError::InvalidArgument(
+                "Cannot append values of different types".to_string(),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
