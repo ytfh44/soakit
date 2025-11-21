@@ -1,8 +1,8 @@
 /// Proxy for single element access in Bulk.
-//!
-//! This module provides the [`Proxy`] structure, which provides a convenient
-//! way to access and manipulate a single element's field values in a [`Bulk`]
-//! structure without working with the entire bulk.
+///
+/// This module provides the [`Proxy`] structure, which provides a convenient
+/// way to access and manipulate a single element's field values in a [`Bulk`]
+/// structure without working with the entire bulk.
 use crate::bulk::Bulk;
 use crate::error::{Result, SoAKitError};
 use crate::meta::Registry;

@@ -1,7 +1,7 @@
 /// Utility functions for SoAKit.
-//!
-//! This module provides utility functions for type checking, field name validation,
-//! and filtering system fields.
+///
+/// This module provides utility functions for type checking, field name validation,
+/// and filtering system fields.
 use crate::value::Value;
 
 /// Check if a value is a scalar (rank 0).

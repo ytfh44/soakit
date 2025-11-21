@@ -1,8 +1,8 @@
 /// Value types for SoAKit
-//!
-//! This module defines the [`Value`] enum which represents all possible data types
-//! that can be stored in a SoAKit [`Bulk`] structure. Values can be scalars (rank 0),
-//! vectors (rank 1), or matrices (rank 2+).
+///
+/// This module defines the [`Value`] enum which represents all possible data types
+/// that can be stored in a SoAKit [`Bulk`] structure. Values can be scalars (rank 0),
+/// vectors (rank 1), or matrices (rank 2+).
 use crate::error::{Result, SoAKitError};
 use std::fmt;
 
@@ -308,7 +308,10 @@ impl Value {
                 if m.is_empty() {
                     vec![0]
                 } else {
-                    let first_row_len = m[0].len();
+                    let first_row_len = m
+                        .first()
+                        .map(|row| row.len())
+                        .unwrap_or(0);
                     vec![m.len(), first_row_len]
                 }
             }

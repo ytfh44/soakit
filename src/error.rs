@@ -1,7 +1,7 @@
 /// Error types for SoAKit operations.
-//!
-//! This module defines the error types used throughout SoAKit. All operations
-//! that can fail return a [`Result<T, SoAKitError>`](Result).
+///
+/// This module defines the error types used throughout SoAKit. All operations
+/// that can fail return a [`Result<T, SoAKitError>`](Result).
 use std::fmt;
 
 /// Main error type for SoAKit operations.

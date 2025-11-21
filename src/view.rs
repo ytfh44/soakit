@@ -1,8 +1,8 @@
 /// View for partitioned data access in Bulk.
-//!
-//! This module provides the [`View`] structure, which represents a partition
-//! of a [`Bulk`] structure. Views are created by partitioning a bulk by a
-//! field's values, allowing efficient access to subsets of the data.
+///
+/// This module provides the [`View`] structure, which represents a partition
+/// of a [`Bulk`] structure. Views are created by partitioning a bulk by a
+/// field's values, allowing efficient access to subsets of the data.
 use crate::bulk::Bulk;
 use crate::error::{Result, SoAKitError};
 use crate::value::Value;

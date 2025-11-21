@@ -1,8 +1,8 @@
 /// Core Bulk data structure for SoA operations.
-//!
-//! This module contains the [`Bulk`] structure, which is the main data container
-//! in SoAKit. It implements the Structure-of-Arrays pattern, storing each field
-//! as a separate array for improved cache locality and performance.
+///
+/// This module contains the [`Bulk`] structure, which is the main data container
+/// in SoAKit. It implements the Structure-of-Arrays pattern, storing each field
+/// as a separate array for improved cache locality and performance.
 use crate::error::{Result, SoAKitError};
 use crate::meta::Registry;
 use crate::util::filter_system_fields;
@@ -226,14 +226,6 @@ impl Bulk {
             return Err(SoAKitError::FieldNotFound(field.to_string()));
         }
 
-        // Validate values
-        if !registry.validate(field, &values[0]) {
-            return Err(SoAKitError::ValidationFailed(format!(
-                "Value validation failed for field: {}",
-                field
-            )));
-        }
-
         // Check length matches
         if values.len() != self.meta.count {
             return Err(SoAKitError::LengthMismatch {
@@ -242,8 +234,19 @@ impl Bulk {
             });
         }
 
+        // Validate values (check if not empty first)
+        let first_value = values
+            .first()
+            .ok_or_else(|| SoAKitError::InvalidArgument("Values cannot be empty".to_string()))?;
+        if !registry.validate(field, first_value) {
+            return Err(SoAKitError::ValidationFailed(format!(
+                "Value validation failed for field: {}",
+                field
+            )));
+        }
+
         // Validate all values have the same type/length
-        let first_len = values[0].len();
+        let first_len = first_value.len();
         for (idx, val) in values.iter().enumerate() {
             if val.len() != first_len {
                 return Err(SoAKitError::InvalidArgument(format!(
@@ -255,11 +258,14 @@ impl Bulk {
 
         // Create new bulk with updated field
         let mut new_bulk = self.clone();
-        new_bulk.data.insert(field.to_string(), values);
+        let _ = new_bulk.data.insert(field.to_string(), values);
 
         // Increment version
         let current_ver = new_bulk.meta.versions.get(field).copied().unwrap_or(0);
-        new_bulk.meta.versions.insert(field.to_string(), current_ver + 1);
+        let new_ver = current_ver
+            .checked_add(1)
+            .ok_or_else(|| SoAKitError::InvalidArgument("Version overflow".to_string()))?;
+        let _ = new_bulk.meta.versions.insert(field.to_string(), new_ver);
 
         // Invalidate cache for any derived fields that depend on this field
         new_bulk.invalidate_dependent_cache(registry, field);
@@ -393,7 +399,7 @@ impl Bulk {
 
             // Update cache
             let mut cache_mut = self.cache.borrow_mut();
-            cache_mut.insert(
+            let _ = cache_mut.insert(
                 field.to_string(),
                 CacheEntry {
                     value: computed_value.clone(),
@@ -440,7 +446,10 @@ impl Bulk {
 
                     // Try to combine into a single vector Value
                     // Check if all values are the same scalar type
-                    match &vec_values[0] {
+                    let first_val = vec_values
+                        .first()
+                        .ok_or_else(|| SoAKitError::InvalidArgument("Empty values".to_string()))?;
+                    match first_val {
                         Value::ScalarInt(_) => {
                             let ints: Result<Vec<i64>> = vec_values
                                 .iter()
@@ -533,7 +542,7 @@ impl Bulk {
 
         let mut cache_mut = self.cache.borrow_mut();
         for f in fields_to_invalidate {
-            cache_mut.remove(&f);
+            let _ = cache_mut.remove(&f);
         }
     }
 
@@ -754,17 +763,22 @@ impl Bulk {
                         if let Some(old_val) = new_values.get_mut(idx) {
                             *old_val = new_val.clone();
                         }
-                        subset_idx += 1;
+                        subset_idx = subset_idx
+                            .checked_add(1)
+                            .ok_or_else(|| SoAKitError::InvalidArgument("Index overflow".to_string()))?;
                     }
                 }
             }
 
             // Update field in new bulk
-            new_bulk.data.insert(field.clone(), new_values);
+            let _ = new_bulk.data.insert(field.clone(), new_values);
 
             // Increment version
             let current_ver = new_bulk.meta.versions.get(&field).copied().unwrap_or(0);
-            new_bulk.meta.versions.insert(field, current_ver + 1);
+            let new_ver = current_ver
+                .checked_add(1)
+                .ok_or_else(|| SoAKitError::InvalidArgument("Version overflow".to_string()))?;
+            let _ = new_bulk.meta.versions.insert(field, new_ver);
         }
 
         Ok(new_bulk)

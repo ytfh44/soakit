@@ -14,7 +14,6 @@ panic_in_result_fn = "deny"
 fallible_impl_from = "deny"
 
 # 禁止未处理的结果
-unused_result = "deny"
 result_large_err = "deny"
 
 # 禁止不安全操作相关
@@ -22,7 +21,6 @@ undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 unsafe_removed_from_name = "warn"
 unsafe_derive_deserialize = "deny"
-drop_forget_ref = "deny"
 ptr_offset_with_cast = "deny"
 
 # 索引越界风险
@@ -64,13 +62,11 @@ into_iter_on_ref = "deny"
 iter_on_single_items = "warn"
 iter_on_empty_collections = "warn"
 invalid_upcast_comparisons = "deny"
-invalid_null_ptr_usage = "deny"
 
 # ==================== 6. 异步编程安全 (Async Safety) ====================
 # async 函数中的问题
 async_yields_async = "warn"
 unused_async = "warn"
-async_fn_in_trait = "warn"
 
 # ==================== 7. 性能与资源安全 (Performance & Resources) ====================
 # 大数组分配检测
@@ -82,8 +78,6 @@ linkedlist = "warn"
 
 # 资源泄漏
 mem_forget = "deny"
-forget_copy = "deny"
-forget_ref = "deny"
 missing_const_for_fn = "warn"
 
 # ==================== 8. 具体可疑模式 (Suspicious Patterns) ====================
@@ -93,7 +87,6 @@ suspicious_map = "warn"
 suspicious_op_assign_impl = "deny"
 suspicious_to_owned = "warn"
 suspicious_unary_op_formatting = "warn"
-suspicious_use_of_offset = "deny"
 suspicious_xor_used_as_pow = "warn"
 
 # ==================== 9. 代码清晰度与维护性 (Maintainability) ====================
@@ -115,7 +108,6 @@ useless_conversion = "warn"
 
 # ==================== 10. 严格模式 (Pedantic) ====================
 missing_panics_doc = "warn"
-missing_docs = "warn"
 module_name_repetitions = "allow"
 pub_use = "warn"
 unused_self = "warn"
@@ -127,8 +119,25 @@ cast_possible_wrap = "warn"
 cast_precision_loss = "warn"
 cast_sign_loss = "warn"
 
+[lints.rust]
+# ==================== Rustc Lints ====================
+# 禁止未处理的结果
+unused_results = "deny"
+
+# API 使用安全
+invalid_null_arguments = "deny"
+
+# 资源泄漏
+forgetting_copy_types = "deny"
+forgetting_references = "deny"
+
+# 异步编程安全
+async_fn_in_trait = "warn"
+
+# 严格模式
+missing_docs = "warn"
+
 # ==================== 11. 测试中的特殊配置 (Test Configuration) ====================
-# 在测试模块中放宽限制（Rust 1.75+ 支持）
 [lints.clippy.test]
 level = "allow"
 unwrap_used = "allow"

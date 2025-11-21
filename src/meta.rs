@@ -1,7 +1,7 @@
 /// Metadata registry for field definitions.
-//!
-//! This module provides the [`Registry`] and [`FieldMetadata`] structures for
-//! managing field definitions, validation, and derived field computation.
+///
+/// This module provides the [`Registry`] and [`FieldMetadata`] structures for
+/// managing field definitions, validation, and derived field computation.
 use crate::error::{Result, SoAKitError};
 use crate::util::is_valid_field_name;
 use crate::value::Value;
@@ -251,7 +251,7 @@ impl Registry {
                 )
             })?;
             let metadata = FieldMetadata::new_derived(validator, dependencies, derived_func)?;
-            self.fields.insert(name, metadata);
+            let _ = self.fields.insert(name, metadata);
         } else {
             if !dependencies.is_empty() || derived_func.is_some() {
                 return Err(SoAKitError::InvalidArgument(
@@ -259,7 +259,7 @@ impl Registry {
                 ));
             }
             let metadata = FieldMetadata::new(validator);
-            self.fields.insert(name, metadata);
+            let _ = self.fields.insert(name, metadata);
         }
 
         Ok(())
