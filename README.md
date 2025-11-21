@@ -58,6 +58,7 @@ if let Value::VectorInt(ages) = bulk.get(&reg, "age").unwrap() {
 - **[API Reference](docs/api.md)**: Complete API documentation
 - **[Usage Guide](docs/usage.md)**: Common patterns and best practices
 - **[Examples](docs/examples.md)**: Comprehensive working examples
+- **[Development Roadmap](docs/roadmap.md)**: Planned features and implementation phases
 
 ## Basic Usage
 
@@ -167,4 +168,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [API Reference](docs/api.md)
 - [Usage Guide](docs/usage.md)
 - [Examples](docs/examples.md)
+- [Development Roadmap](docs/roadmap.md)
 

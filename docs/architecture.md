@@ -279,11 +279,16 @@ let derived_func = Box::new(|args: &[Value]| {
 
 ## Future Enhancements
 
-Potential areas for extension:
+For a comprehensive overview of planned features, implementation phases, and development priorities, see the [Development Roadmap](roadmap.md).
 
-1. **Serialization**: Support for serializing/deserializing Bulk structures
-2. **Lazy Evaluation**: Defer computation of derived fields until needed
-3. **Parallel Processing**: Parallel computation of derived fields
-4. **Indexing**: Add indexes for faster lookups
-5. **Query Interface**: SQL-like query interface for filtering and aggregation
+The roadmap organizes planned enhancements into six implementation phases:
+
+1. **Foundation & Core Infrastructure**: Serialization, basic querying, type system enhancements, memory management
+2. **Query & Data Operations**: Advanced querying, transformations, data cleaning, joins
+3. **Performance & Scalability**: Parallel processing, indexing, lazy evaluation, memory optimization
+4. **Concurrency & Advanced Features**: Thread safety, async support, transactions, time series
+5. **Ecosystem & Tooling**: Plugin system, external integrations, CLI/REPL, monitoring, ML integration
+6. **Specialized Domains**: Graph data support, advanced ML features, WebAssembly optimization
+
+Each phase builds upon previous phases, ensuring foundational capabilities are established before advanced features are implemented.
 
