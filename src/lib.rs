@@ -67,7 +67,7 @@ pub mod view;
 // Re-export public API
 pub use bulk::{Bulk, CacheEntry, Meta};
 pub use error::{Result, SoAKitError};
-pub use meta::{FieldMetadata, Registry};
+pub use meta::{DerivedFunc, FieldMetadata, Registry};
 pub use proxy::Proxy;
 pub use util::{filter_system_fields, is_matrix, is_scalar, is_valid_field_name, is_vector};
 pub use value::Value;

@@ -7,6 +7,12 @@ use crate::util::is_valid_field_name;
 use crate::value::Value;
 use std::collections::BTreeMap;
 
+/// Type alias for derived field computation functions.
+///
+/// A derived function takes a slice of `Value` arguments (the dependencies)
+/// and returns a `Result<Value>` (the computed value).
+pub type DerivedFunc = Box<dyn Fn(&[Value]) -> Result<Value> + Send + Sync>;
+
 /// Metadata for a field in the registry.
 ///
 /// Contains all information needed to validate and compute field values,
@@ -27,7 +33,7 @@ pub struct FieldMetadata {
     /// Dependencies for derived fields (field names this field depends on)
     pub dependencies: Vec<String>,
     /// Function to compute derived field value from dependencies
-    pub derived_func: Option<Box<dyn Fn(&[Value]) -> Result<Value> + Send + Sync>>,
+    pub derived_func: Option<DerivedFunc>,
 }
 
 impl FieldMetadata {
@@ -106,7 +112,7 @@ impl FieldMetadata {
     pub fn new_derived(
         validator: Box<dyn Fn(&Value) -> bool + Send + Sync>,
         dependencies: Vec<String>,
-        derived_func: Box<dyn Fn(&[Value]) -> Result<Value> + Send + Sync>,
+        derived_func: DerivedFunc,
     ) -> Result<Self> {
         if dependencies.is_empty() {
             return Err(SoAKitError::DerivedFieldNoDeps(
@@ -149,7 +155,7 @@ impl Registry {
     /// let registry = Registry::new();
     /// assert!(registry.is_empty());
     /// ```
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             fields: BTreeMap::new(),
         }
@@ -228,7 +234,7 @@ impl Registry {
         validator: Box<dyn Fn(&Value) -> bool + Send + Sync>,
         is_derived: bool,
         dependencies: Vec<String>,
-        derived_func: Option<Box<dyn Fn(&[Value]) -> Result<Value> + Send + Sync>>,
+        derived_func: Option<DerivedFunc>,
     ) -> Result<()> {
         if !is_valid_field_name(&name) {
             return Err(SoAKitError::InvalidArgument(format!(
@@ -466,7 +472,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         reg.register(
@@ -484,13 +492,7 @@ mod tests {
     fn test_register_derived_field_no_deps() {
         let mut reg = Registry::new();
         let validator = Box::new(|v: &Value| matches!(v, Value::VectorInt(_)));
-        let result = reg.register(
-            "sum".to_string(),
-            validator,
-            true,
-            vec![],
-            None,
-        );
+        let result = reg.register("sum".to_string(), validator, true, vec![], None);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -616,8 +618,14 @@ mod tests {
 
         // Float validator
         let float_validator = Box::new(|v: &Value| matches!(v, Value::ScalarFloat(_)));
-        reg.register("float_field".to_string(), float_validator, false, vec![], None)
-            .unwrap();
+        reg.register(
+            "float_field".to_string(),
+            float_validator,
+            false,
+            vec![],
+            None,
+        )
+        .unwrap();
 
         // String validator
         let str_validator = Box::new(|v: &Value| matches!(v, Value::ScalarString(_)));
@@ -626,8 +634,14 @@ mod tests {
 
         // Bool validator
         let bool_validator = Box::new(|v: &Value| matches!(v, Value::ScalarBool(_)));
-        reg.register("bool_field".to_string(), bool_validator, false, vec![], None)
-            .unwrap();
+        reg.register(
+            "bool_field".to_string(),
+            bool_validator,
+            false,
+            vec![],
+            None,
+        )
+        .unwrap();
 
         assert!(reg.validate("int_field", &Value::ScalarInt(42)));
         assert!(!reg.validate("int_field", &Value::ScalarFloat(3.14)));
@@ -689,7 +703,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         reg.register(
@@ -780,7 +796,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         let metadata = FieldMetadata::new_derived(
@@ -791,7 +809,10 @@ mod tests {
         .unwrap();
 
         assert!(metadata.is_derived);
-        assert_eq!(metadata.dependencies, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            metadata.dependencies,
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert!(metadata.derived_func.is_some());
     }
 
@@ -825,10 +846,14 @@ mod tests {
                         .collect();
                     Ok(Value::VectorInt(sum))
                 } else {
-                    Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                    Err(SoAKitError::InvalidArgument(
+                        "Invalid arguments".to_string(),
+                    ))
                 }
             } else {
-                Err(SoAKitError::InvalidArgument("Wrong number of args".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Wrong number of args".to_string(),
+                ))
             }
         });
         reg.register(
@@ -850,10 +875,22 @@ mod tests {
         let validator = Box::new(|v: &Value| matches!(v, Value::ScalarInt(_)));
 
         // Valid names with various characters
-        reg.register("field_123".to_string(), validator.clone(), false, vec![], None)
-            .unwrap();
-        reg.register("field-name".to_string(), validator.clone(), false, vec![], None)
-            .unwrap();
+        reg.register(
+            "field_123".to_string(),
+            validator.clone(),
+            false,
+            vec![],
+            None,
+        )
+        .unwrap();
+        reg.register(
+            "field-name".to_string(),
+            validator.clone(),
+            false,
+            vec![],
+            None,
+        )
+        .unwrap();
         reg.register("fieldName".to_string(), validator, false, vec![], None)
             .unwrap();
 
@@ -880,4 +917,3 @@ mod tests {
         assert!(!reg.has_field("name"));
     }
 }
-

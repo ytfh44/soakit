@@ -123,7 +123,7 @@ impl Value {
     /// assert!(Value::ScalarFloat(3.14).is_scalar());
     /// assert!(!Value::VectorInt(vec![1, 2, 3]).is_scalar());
     /// ```
-    pub fn is_scalar(&self) -> bool {
+    pub const fn is_scalar(&self) -> bool {
         matches!(
             self,
             Value::ScalarInt(_)
@@ -151,7 +151,7 @@ impl Value {
     /// assert!(!Value::ScalarInt(42).is_vector());
     /// assert!(!Value::Matrix(vec![]).is_vector());
     /// ```
-    pub fn is_vector(&self) -> bool {
+    pub const fn is_vector(&self) -> bool {
         matches!(
             self,
             Value::VectorInt(_)
@@ -178,7 +178,7 @@ impl Value {
     /// assert!(matrix.is_matrix());
     /// assert!(!Value::VectorInt(vec![1, 2]).is_matrix());
     /// ```
-    pub fn is_matrix(&self) -> bool {
+    pub const fn is_matrix(&self) -> bool {
         matches!(self, Value::Matrix(_))
     }
 
@@ -201,7 +201,7 @@ impl Value {
     /// assert_eq!(Value::VectorInt(vec![1, 2, 3]).rank(), 1);
     /// assert_eq!(Value::Matrix(vec![Value::VectorInt(vec![1, 2])]).rank(), 2);
     /// ```
-    pub fn rank(&self) -> usize {
+    pub const fn rank(&self) -> usize {
         match self {
             Value::ScalarInt(_)
             | Value::ScalarFloat(_)
@@ -234,7 +234,7 @@ impl Value {
     /// assert_eq!(Value::VectorInt(vec![1, 2, 3]).len(), 3);
     /// assert_eq!(Value::VectorInt(vec![]).len(), 0);
     /// ```
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Value::ScalarInt(_)
             | Value::ScalarFloat(_)
@@ -435,6 +435,14 @@ impl Value {
     /// - Array -> Vector (if all elements same type) or Matrix (if elements are arrays)
     ///
     /// Note: This does best-effort inference. For empty arrays, it defaults to VectorInt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON value is `Null`
+    /// - A number cannot be represented as i64 or f64
+    /// - An array contains mixed types
+    /// - An array element cannot be converted to a Value
     pub fn from_untagged_json_value(json: serde_json::Value) -> Result<Self> {
         match json {
             serde_json::Value::Null => Err(SoAKitError::InvalidArgument(
@@ -460,7 +468,9 @@ impl Value {
                 }
 
                 // Check first element to determine type
-                let first = &arr[0];
+                let first = arr.first().ok_or_else(|| {
+                    SoAKitError::InvalidArgument("Empty array in JSON".to_string())
+                })?;
                 match first {
                     serde_json::Value::Number(n) if n.is_i64() => {
                         let mut vec = Vec::with_capacity(arr.len());
@@ -537,12 +547,20 @@ impl Value {
     ///
     /// All values must be of the same type. Supports both scalar types (which are
     /// converted to vectors) and vector types (which are converted to Matrix).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The scalars vector contains mixed types
+    /// - An unsupported Value type is encountered
     pub fn from_scalars(scalars: Vec<Value>) -> Result<Self> {
         if scalars.is_empty() {
             return Ok(Value::VectorInt(Vec::new())); // Default to empty int vector
         }
 
-        let first = &scalars[0];
+        let first = scalars
+            .first()
+            .ok_or_else(|| SoAKitError::InvalidArgument("Empty scalars vector".to_string()))?;
         match first {
             Value::ScalarInt(_) => {
                 let mut vec = Vec::with_capacity(scalars.len());
@@ -614,6 +632,10 @@ impl Value {
     /// Append another vector Value to this one.
     ///
     /// Both Values must be of the same vector type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the two Values are not of the same vector type.
     pub fn append(&mut self, other: Value) -> Result<()> {
         match (self, other) {
             (Value::VectorInt(v1), Value::VectorInt(v2)) => {

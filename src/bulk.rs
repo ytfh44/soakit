@@ -30,9 +30,15 @@ pub struct Chunk {
     pub columns: BTreeMap<String, Value>,
 }
 
+impl Default for Chunk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chunk {
     /// Create a new empty chunk.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             len: 0,
             columns: BTreeMap::new(),
@@ -291,13 +297,22 @@ impl Bulk {
 
         // If chunks are empty (first field being set), initialize them
         if new_bulk.chunks.is_empty() {
-            let num_chunks = (self.meta.count + CHUNK_SIZE - 1) / CHUNK_SIZE;
+            let num_chunks = self.meta.count.div_ceil(CHUNK_SIZE);
             new_bulk.chunks = Vec::with_capacity(num_chunks);
             for i in 0..num_chunks {
-                let start = i * CHUNK_SIZE;
-                let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
+                let start = i.checked_mul(CHUNK_SIZE).ok_or_else(|| {
+                    SoAKitError::InvalidArgument("Arithmetic overflow".to_string())
+                })?;
+                let end = std::cmp::min(
+                    start.checked_add(CHUNK_SIZE).ok_or_else(|| {
+                        SoAKitError::InvalidArgument("Arithmetic overflow".to_string())
+                    })?,
+                    self.meta.count,
+                );
                 new_bulk.chunks.push(Chunk {
-                    len: end - start,
+                    len: end.checked_sub(start).ok_or_else(|| {
+                        SoAKitError::InvalidArgument("Arithmetic underflow".to_string())
+                    })?,
                     columns: BTreeMap::new(),
                 });
             }
@@ -305,9 +320,21 @@ impl Bulk {
 
         // Distribute values into chunks
         for (i, chunk) in new_bulk.chunks.iter_mut().enumerate() {
-            let start = i * CHUNK_SIZE;
-            let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
-            let chunk_values = values[start..end].to_vec();
+            let start = i
+                .checked_mul(CHUNK_SIZE)
+                .ok_or_else(|| SoAKitError::InvalidArgument("Arithmetic overflow".to_string()))?;
+            let end = std::cmp::min(
+                start.checked_add(CHUNK_SIZE).ok_or_else(|| {
+                    SoAKitError::InvalidArgument("Arithmetic overflow".to_string())
+                })?,
+                self.meta.count,
+            );
+            let chunk_values = values
+                .get(start..end)
+                .ok_or_else(|| {
+                    SoAKitError::InvalidArgument("Slice index out of bounds".to_string())
+                })?
+                .to_vec();
 
             // Convert chunk values (scalars) to a single Vector Value
             let vector_value = Value::from_scalars(chunk_values)?;
@@ -326,22 +353,19 @@ impl Bulk {
 
         Ok(new_bulk)
     }
+}
 
-    /// Clone the bulk structure.
-    ///
-    /// Creates a deep copy of the bulk, including all field data and cache entries.
-    ///
-    /// # Returns
-    ///
-    /// A new `Bulk` instance with cloned data.
-    pub fn clone(&self) -> Self {
+impl Clone for Bulk {
+    fn clone(&self) -> Self {
         Self {
             meta: self.meta.clone(),
             chunks: self.chunks.clone(),
             cache: RefCell::new(self.cache.borrow().clone()),
         }
     }
+}
 
+impl Bulk {
     /// Serialize bulk to JSON string
     ///
     /// # Returns
@@ -437,15 +461,15 @@ impl Bulk {
         let mut records = Vec::with_capacity(self.meta.count);
 
         for (chunk_idx, chunk) in self.chunks.iter().enumerate() {
-            let chunk_start_id = chunk_idx * CHUNK_SIZE;
+            let chunk_start_id = chunk_idx.checked_mul(CHUNK_SIZE).unwrap_or(0); // Safe: chunk_idx is within bounds
 
             for i in 0..chunk.len {
                 let mut record = std::collections::BTreeMap::new();
                 // Add ID
-                let _ = record.insert(
-                    "id".to_string(),
-                    Value::ScalarInt(self.meta.id[chunk_start_id + i] as i64),
-                );
+                let id_idx = chunk_start_id.checked_add(i).unwrap_or(0); // Safe: within chunk bounds
+                #[allow(clippy::cast_possible_wrap)]
+                let id_val = self.meta.id.get(id_idx).copied().unwrap_or(0) as i64; // Safe: we know the index exists
+                let _ = record.insert("id".to_string(), Value::ScalarInt(id_val));
 
                 // Add fields
                 for (name, values) in &chunk.columns {
@@ -481,7 +505,9 @@ impl Bulk {
         let mut current_bulk = bulk;
 
         for name in registry.list_fields() {
-            let meta = registry.get_metadata(&name).unwrap();
+            let meta = registry
+                .get_metadata(&name)
+                .ok_or_else(|| SoAKitError::FieldNotFound(name.clone()))?;
             if meta.is_derived {
                 continue;
             }
@@ -514,6 +540,10 @@ impl Bulk {
     }
 
     /// Serialize bulk to a JSON string of records (AoS format).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSON serialization fails.
     pub fn to_records_json(&self) -> Result<String> {
         let records_values = self.to_records_values();
 
@@ -532,6 +562,14 @@ impl Bulk {
     }
 
     /// Deserialize bulk from a JSON string of records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - JSON parsing fails
+    /// - A record is not a valid JSON object
+    /// - Field values cannot be converted to the expected types
+    /// - Required fields are missing
     pub fn from_records_json(json: &str, registry: &crate::meta::Registry) -> Result<Self> {
         let parsed: serde_json::Value =
             serde_json::from_str(json).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
@@ -569,6 +607,10 @@ impl Bulk {
     }
 
     /// Serialize bulk to a TOML string of records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TOML serialization fails.
     pub fn to_records_toml(&self) -> Result<String> {
         let records_values = self.to_records_values();
 
@@ -591,6 +633,15 @@ impl Bulk {
 
     /// Deserialize bulk from a TOML string of records.
     /// Expects `[[records]]` format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - TOML parsing fails
+    /// - The TOML structure is invalid (missing `records` key)
+    /// - A record is not a valid object
+    /// - Field values cannot be converted to the expected types
+    /// - Required fields are missing
     pub fn from_records_toml(toml: &str, registry: &crate::meta::Registry) -> Result<Self> {
         let parsed: serde_json::Value =
             toml::from_str(toml).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
@@ -635,12 +686,23 @@ impl Bulk {
     }
 
     /// Serialize bulk to a binary format of records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if binary serialization fails.
     pub fn to_records_binary(&self) -> Result<Vec<u8>> {
         let records = self.to_records_values();
         bincode::serialize(&records).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))
     }
 
     /// Deserialize bulk from a binary format of records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Binary deserialization fails
+    /// - Field values cannot be converted to the expected types
+    /// - Required fields are missing
     pub fn from_records_binary(data: &[u8], registry: &crate::meta::Registry) -> Result<Self> {
         let records: Vec<std::collections::BTreeMap<String, Value>> =
             bincode::deserialize(data).map_err(|e| SoAKitError::InvalidArgument(e.to_string()))?;
@@ -850,7 +912,7 @@ impl Bulk {
     /// let bulk = Bulk::new(10).unwrap();
     /// assert_eq!(bulk.count(), 10);
     /// ```
-    pub fn count(&self) -> usize {
+    pub const fn count(&self) -> usize {
         self.meta.count
     }
 
@@ -1081,22 +1143,26 @@ impl Bulk {
             // Update values for masked positions
             let mut new_values = old_values;
             let mut subset_idx = 0;
-            for (idx, &mask_val) in normalized_mask.iter().enumerate() {
-                if mask_val {
-                    if let Some(new_val) = new_subset.get(subset_idx) {
-                        if let Some(old_val) = new_values.get_mut(idx) {
-                            *old_val = new_val.clone();
-                        }
-                        subset_idx += 1;
+            for (idx, mask_val) in normalized_mask.iter().enumerate() {
+                if *mask_val && let Some(new_val) = new_subset.get(subset_idx) {
+                    if let Some(old_val) = new_values.get_mut(idx) {
+                        *old_val = new_val.clone();
                     }
+                    subset_idx = subset_idx.checked_add(1).unwrap_or(subset_idx); // Safe: iterating sequentially
                 }
             }
 
-            // Distribute new values back into chunks
+            // Rechunk revised values
             for (i, chunk) in new_bulk.chunks.iter_mut().enumerate() {
-                let start = i * CHUNK_SIZE;
-                let end = std::cmp::min(start + CHUNK_SIZE, self.meta.count);
-                let chunk_values = new_values[start..end].to_vec();
+                let start = i.checked_mul(CHUNK_SIZE).unwrap_or(0); // Safe: chunk index is valid
+                let end = std::cmp::min(
+                    start.checked_add(CHUNK_SIZE).unwrap_or(start), // Safe: adding constant
+                    self.meta.count,
+                );
+                let chunk_values = new_values
+                    .get(start..end)
+                    .ok_or_else(|| SoAKitError::InvalidArgument("Slice out of bounds".to_string()))?
+                    .to_vec();
 
                 let vector_value = Value::from_scalars(chunk_values)?;
                 let _ = chunk.columns.insert(field.clone(), vector_value);
@@ -1255,7 +1321,7 @@ impl Bulk {
         let bulk_rc = Rc::new(self.clone());
         let views: Result<Vec<crate::view::View>> = unique_values
             .into_iter()
-            .zip(masks.into_iter())
+            .zip(masks)
             .map(|(key, mask)| crate::view::View::new(key, mask, bulk_rc.clone()))
             .collect();
 

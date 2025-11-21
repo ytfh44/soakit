@@ -138,42 +138,30 @@ impl Proxy {
 
         // Extract the element at our index
         match field_value {
-            Value::VectorInt(v) => {
-                v.get(self.idx)
-                    .copied()
-                    .map(Value::ScalarInt)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: self.idx,
-                        max: v.len(),
-                    })
-            }
-            Value::VectorFloat(v) => {
-                v.get(self.idx)
-                    .copied()
-                    .map(Value::ScalarFloat)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: self.idx,
-                        max: v.len(),
-                    })
-            }
-            Value::VectorBool(v) => {
-                v.get(self.idx)
-                    .copied()
-                    .map(Value::ScalarBool)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: self.idx,
-                        max: v.len(),
-                    })
-            }
-            Value::VectorString(v) => {
-                v.get(self.idx)
-                    .cloned()
-                    .map(Value::ScalarString)
-                    .ok_or_else(|| SoAKitError::IndexOutOfBounds {
-                        index: self.idx,
-                        max: v.len(),
-                    })
-            }
+            Value::VectorInt(v) => v.get(self.idx).copied().map(Value::ScalarInt).ok_or(
+                SoAKitError::IndexOutOfBounds {
+                    index: self.idx,
+                    max: v.len(),
+                },
+            ),
+            Value::VectorFloat(v) => v.get(self.idx).copied().map(Value::ScalarFloat).ok_or(
+                SoAKitError::IndexOutOfBounds {
+                    index: self.idx,
+                    max: v.len(),
+                },
+            ),
+            Value::VectorBool(v) => v.get(self.idx).copied().map(Value::ScalarBool).ok_or(
+                SoAKitError::IndexOutOfBounds {
+                    index: self.idx,
+                    max: v.len(),
+                },
+            ),
+            Value::VectorString(v) => v.get(self.idx).cloned().map(Value::ScalarString).ok_or(
+                SoAKitError::IndexOutOfBounds {
+                    index: self.idx,
+                    max: v.len(),
+                },
+            ),
             _ => Err(SoAKitError::InvalidArgument(
                 "Field value is not a vector".to_string(),
             )),
@@ -329,7 +317,10 @@ mod tests {
         );
 
         let proxy = Proxy::new(bulk.clone(), 0).unwrap();
-        assert_eq!(proxy.get_field(&registry, "age").unwrap(), Value::ScalarInt(25));
+        assert_eq!(
+            proxy.get_field(&registry, "age").unwrap(),
+            Value::ScalarInt(25)
+        );
         assert_eq!(
             proxy.get_field(&registry, "height").unwrap(),
             Value::ScalarFloat(1.75)
@@ -344,7 +335,10 @@ mod tests {
         );
 
         let proxy = Proxy::new(bulk.clone(), 1).unwrap();
-        assert_eq!(proxy.get_field(&registry, "age").unwrap(), Value::ScalarInt(30));
+        assert_eq!(
+            proxy.get_field(&registry, "age").unwrap(),
+            Value::ScalarInt(30)
+        );
         assert_eq!(
             proxy.get_field(&registry, "height").unwrap(),
             Value::ScalarFloat(1.80)
@@ -379,11 +373,17 @@ mod tests {
 
         // First element
         let proxy = Proxy::new(bulk.clone(), 0).unwrap();
-        assert_eq!(proxy.get_field(&registry, "value").unwrap(), Value::ScalarInt(0));
+        assert_eq!(
+            proxy.get_field(&registry, "value").unwrap(),
+            Value::ScalarInt(0)
+        );
 
         // Last element
         let proxy = Proxy::new(bulk.clone(), 4).unwrap();
-        assert_eq!(proxy.get_field(&registry, "value").unwrap(), Value::ScalarInt(4));
+        assert_eq!(
+            proxy.get_field(&registry, "value").unwrap(),
+            Value::ScalarInt(4)
+        );
     }
 
     #[test]
@@ -395,10 +395,16 @@ mod tests {
             .unwrap();
 
         let bulk = Rc::new(Bulk::new(1).unwrap());
-        let bulk = Rc::new(bulk.set(&registry, "value", vec![Value::ScalarInt(42)]).unwrap());
+        let bulk = Rc::new(
+            bulk.set(&registry, "value", vec![Value::ScalarInt(42)])
+                .unwrap(),
+        );
 
         let proxy = Proxy::new(bulk.clone(), 0).unwrap();
-        assert_eq!(proxy.get_field(&registry, "value").unwrap(), Value::ScalarInt(42));
+        assert_eq!(
+            proxy.get_field(&registry, "value").unwrap(),
+            Value::ScalarInt(42)
+        );
     }
 
     #[test]
@@ -411,7 +417,6 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SoAKitError::FieldNotFound(_)));
     }
-
 
     #[test]
     fn test_proxy_index_at_boundary() {
@@ -452,7 +457,9 @@ mod tests {
                 let sum: Vec<i64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
                 Ok(Value::VectorInt(sum))
             } else {
-                Err(SoAKitError::InvalidArgument("Invalid arguments".to_string()))
+                Err(SoAKitError::InvalidArgument(
+                    "Invalid arguments".to_string(),
+                ))
             }
         });
         registry
@@ -470,7 +477,11 @@ mod tests {
             bulk.set(
                 &registry,
                 "a",
-                vec![Value::ScalarInt(10), Value::ScalarInt(20), Value::ScalarInt(30)],
+                vec![
+                    Value::ScalarInt(10),
+                    Value::ScalarInt(20),
+                    Value::ScalarInt(30),
+                ],
             )
             .unwrap(),
         );
@@ -478,7 +489,11 @@ mod tests {
             bulk.set(
                 &registry,
                 "b",
-                vec![Value::ScalarInt(5), Value::ScalarInt(15), Value::ScalarInt(25)],
+                vec![
+                    Value::ScalarInt(5),
+                    Value::ScalarInt(15),
+                    Value::ScalarInt(25),
+                ],
             )
             .unwrap(),
         );
@@ -508,7 +523,10 @@ mod tests {
             bulk.set(
                 &registry,
                 "name",
-                vec![Value::ScalarString(String::new()), Value::ScalarString("test".to_string())],
+                vec![
+                    Value::ScalarString(String::new()),
+                    Value::ScalarString("test".to_string()),
+                ],
             )
             .unwrap(),
         );
@@ -559,4 +577,3 @@ mod tests {
         }
     }
 }
-
